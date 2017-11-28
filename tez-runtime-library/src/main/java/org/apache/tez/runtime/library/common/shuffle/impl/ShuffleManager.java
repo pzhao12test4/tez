@@ -702,9 +702,7 @@ public class ShuffleManager implements FetcherCallback {
   private void maybeInformInputReady(FetchedInput fetchedInput) {
     lock.lock();
     try {
-      if (!(fetchedInput instanceof NullFetchedInput)) {
-        completedInputs.add(fetchedInput);
-      }
+      completedInputs.add(fetchedInput);
       if (!inputReadyNotificationSent.getAndSet(true)) {
         // TODO Should eventually be controlled by Inputs which are processing the data.
         inputContext.inputIsReady();
@@ -721,10 +719,6 @@ public class ShuffleManager implements FetcherCallback {
 
       int numComplete = numCompletedInputs.incrementAndGet();
       if (numComplete == numInputs) {
-        // Poison pill End of Input message to awake blocking take call
-        if (fetchedInput instanceof NullFetchedInput) {
-          completedInputs.add(fetchedInput);
-        }
         LOG.info("All inputs fetched for input vertex : " + inputContext.getSourceVertexName());
       }
     } finally {
@@ -852,6 +846,20 @@ public class ShuffleManager implements FetcherCallback {
     }
   }
 
+  /////////////////// Methods for walking the available inputs
+  
+  /**
+   * @return true if there is another input ready for consumption.
+   */
+  public boolean newInputAvailable() {
+    FetchedInput head = completedInputs.peek();
+    if (head == null || head instanceof NullFetchedInput) {
+      return false;
+    } else {
+      return true;
+    }
+  }
+
   /**
    * @return true if all of the required inputs have been fetched.
    */
@@ -870,21 +878,21 @@ public class ShuffleManager implements FetcherCallback {
    *         but more may become available.
    */
   public FetchedInput getNextInput() throws InterruptedException {
-    // Check for no additional inputs
-    lock.lock();
-    try {
-      if (completedInputs.peek() == null && allInputsFetched()) {
-        return null;
+    FetchedInput input = null;
+    do {
+      // Check for no additional inputs
+      lock.lock();
+      try {
+        input = completedInputs.peek();
+        if (input == null && allInputsFetched()) {
+          break;
+        }
+      } finally {
+        lock.unlock();
       }
-    } finally {
-      lock.unlock();
-    }
-    // Block until next input or End of Input message
-    FetchedInput fetchedInput = completedInputs.take();
-    if (fetchedInput instanceof NullFetchedInput) {
-      fetchedInput = null;
-    }
-    return fetchedInput;
+      input = completedInputs.take(); // block
+    } while (input instanceof NullFetchedInput);
+    return input;
   }
 
   public int getNumInputs() {
